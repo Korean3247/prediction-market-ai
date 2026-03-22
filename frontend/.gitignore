@@ -1,0 +1,22 @@
+.vercel
+
+# Environment & secrets
+.env
+.env.local
+.env.*.local
+
+# Next.js
+.next/
+out/
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Build
+dist/
+build/
+*.tsbuildinfo
+
+# OS
+.DS_Store

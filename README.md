@@ -38,7 +38,7 @@ An end-to-end AI system that monitors 500+ prediction markets across **Polymarke
 **ML**: XGBoost, scikit-learn (9-feature calibrator, auto-retrained)
 **LLM**: GPT-4o-mini (research summaries, probability forecasting, failure analysis)
 **Real-time**: WebSocket (Polymarket), Telegram Bot alerts
-**Frontend**: Next.js, TypeScript, Tailwind CSS → [`prediction-market-frontend`](https://github.com/Korean3247/prediction-market-frontend)
+**Frontend**: Next.js, TypeScript, Tailwind CSS (see `frontend/`)
 
 ## Features
 
@@ -60,15 +60,35 @@ An end-to-end AI system that monitors 500+ prediction markets across **Polymarke
 | `INTRADAY_HOURS` | `24` | Hours-to-resolve threshold for intraday classification |
 | `MISPRICING_ALERT_COOLDOWN_SECONDS` | `300` | Min seconds between alerts per market |
 
+## Project Structure
+
+```
+prediction-market-ai/
+├── agents/          # 5 autonomous agents (Scan, Research, Prediction, Risk, Review)
+├── api/             # FastAPI REST endpoints
+├── services/        # Market fetchers, LLM, alerts, sentiment analysis
+├── database/        # SQLAlchemy models & migrations
+├── frontend/        # Next.js dashboard (TypeScript, Tailwind CSS)
+├── main.py          # Server entrypoint (API + scheduler + WebSocket)
+├── cli.py           # CLI commands
+├── config.py        # Pydantic settings (loaded from .env)
+└── scheduler.py     # APScheduler background jobs
+```
+
 ## Setup
 
 ```bash
 git clone https://github.com/Korean3247/prediction-market-ai.git
 cd prediction-market-ai
-pip install -r requirements.txt
 
+# Backend
+pip install -r requirements.txt
 cp .env.example .env
 # Fill in your API keys in .env
+
+# Frontend
+cd frontend
+npm install
 ```
 
 **Required**: `OPENAI_API_KEY`
@@ -77,8 +97,11 @@ cp .env.example .env
 ## Usage
 
 ```bash
-# Start the full server (API + scheduler + WebSocket monitor)
+# Start the backend (API + scheduler + WebSocket monitor)
 python main.py
+
+# Start the frontend (in a separate terminal)
+cd frontend && npm run dev
 
 # CLI commands
 python cli.py scan                        # Scan all platforms
@@ -89,4 +112,4 @@ python cli.py stats                       # System statistics
 python cli.py outcomes                    # Recent resolved outcomes
 ```
 
-The REST API runs at `http://localhost:8000`. See `/docs` for the full OpenAPI spec.
+The REST API runs at `http://localhost:8000` (`/docs` for OpenAPI spec). The frontend runs at `http://localhost:3000`.

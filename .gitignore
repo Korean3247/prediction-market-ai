@@ -29,5 +29,10 @@ build/
 *.log
 logs/
 
+# Frontend
+node_modules/
+.next/
+.vercel/
+
 # OS
 .DS_Store
