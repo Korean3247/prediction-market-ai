@@ -288,13 +288,40 @@ class RiskAgent:
         """
         edge = float(prediction.edge)
         confidence = float(prediction.confidence_score)
+        current_price = float(market.current_price or 0)
 
-        if confidence >= settings.PAPER_MIN_CONFIDENCE:
+        # Gate 1: Confidence
+        if confidence < settings.PAPER_MIN_CONFIDENCE:
+            return
+        # Gate 2: Edge — was missing before, now enforced
+        if abs(edge) < settings.PAPER_MIN_EDGE:
+            logger.debug(
+                f"RiskAgent: skipping paper trade for {market.market_id} "
+                f"— edge {edge:.3f} below PAPER_MIN_EDGE {settings.PAPER_MIN_EDGE}"
+            )
+            return
+        # Gate 3: Min probability — avoid YES bets on near-zero markets (e.g. 1%)
+        if current_price < settings.PAPER_MIN_PRICE:
+            logger.debug(
+                f"RiskAgent: skipping paper trade for {market.market_id} "
+                f"— price {current_price:.3f} below PAPER_MIN_PRICE {settings.PAPER_MIN_PRICE}"
+            )
+            return
+
+        if True:  # indent guard
             from datetime import datetime as _dt
             now = _dt.utcnow()
             is_short_term = False
+            # Gate 4: Max horizon — skip markets resolving too far in the future
             if market.resolve_time:
                 hours_left = (market.resolve_time - now).total_seconds() / 3600
+                max_hours = settings.PAPER_MAX_HORIZON_DAYS * 24
+                if hours_left > max_hours:
+                    logger.debug(
+                        f"RiskAgent: skipping paper trade for {market.market_id} "
+                        f"— resolves in {hours_left/24:.0f}d, max is {settings.PAPER_MAX_HORIZON_DAYS}d"
+                    )
+                    return
                 is_short_term = hours_left <= settings.FAST_PIPELINE_HOURS
 
             def _save_paper(db: Session) -> None:

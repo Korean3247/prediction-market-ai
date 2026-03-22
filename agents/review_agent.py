@@ -75,6 +75,73 @@ class ReviewAgent:
         """Async entry point."""
         return await self._review_async()
 
+    def cancel_invalid_paper_trades(self) -> int:
+        """
+        One-shot cleanup: cancel open paper trades that violate current filter rules.
+
+        Cancels trades where ANY of the following apply:
+          - entry_price < PAPER_MIN_PRICE  (near-zero probability markets)
+          - edge < PAPER_MIN_EDGE          (insufficient edge)
+          - market resolves > PAPER_MAX_HORIZON_DAYS from now
+          - market is already resolved/inactive
+
+        Returns count of cancelled trades.
+        """
+        from datetime import timedelta
+        now = datetime.utcnow()
+        max_resolve = now + timedelta(days=settings.PAPER_MAX_HORIZON_DAYS)
+        cancelled = 0
+
+        def _run(db: Session) -> int:
+            count = 0
+            open_trades = (
+                db.query(PaperTrade)
+                .filter(PaperTrade.status == "open")
+                .all()
+            )
+            for pt in open_trades:
+                market = db.query(Market).filter(Market.id == pt.market_id).first()
+                reasons = []
+
+                entry = float(pt.entry_price or 0)
+                edge = float(pt.edge or 0)
+
+                if entry < settings.PAPER_MIN_PRICE:
+                    reasons.append(f"price {entry:.3f} < {settings.PAPER_MIN_PRICE}")
+                if abs(edge) < settings.PAPER_MIN_EDGE:
+                    reasons.append(f"edge {edge:.3f} < {settings.PAPER_MIN_EDGE}")
+                if market:
+                    if market.resolve_time and market.resolve_time > max_resolve:
+                        reasons.append(
+                            f"resolves {(market.resolve_time - now).days}d out > {settings.PAPER_MAX_HORIZON_DAYS}d"
+                        )
+                    if market.status != MarketStatus.ACTIVE:
+                        reasons.append("market not active")
+
+                if reasons:
+                    pt.status = "cancelled"
+                    pt.pnl = 0.0
+                    pt.resolved_at = now
+                    count += 1
+                    logger.info(
+                        f"[Cleanup] Cancelled paper trade {pt.id} "
+                        f"({market.title[:50] if market else 'unknown'}): {', '.join(reasons)}"
+                    )
+            return count
+
+        try:
+            if self._db:
+                cancelled = _run(self._db)
+                self._db.commit()
+            else:
+                with get_db_context() as db:
+                    cancelled = _run(db)
+            logger.info(f"[Cleanup] Cancelled {cancelled} invalid paper trades.")
+        except Exception as e:
+            logger.error(f"[Cleanup] cancel_invalid_paper_trades failed: {e}")
+
+        return cancelled
+
     async def _review_async(self) -> List[Outcome]:
         """Core async review pipeline."""
         logger.info("ReviewAgent: scanning for resolved markets.")

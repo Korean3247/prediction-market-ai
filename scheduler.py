@@ -163,6 +163,10 @@ def job_review_completed_markets() -> None:
         from agents.review_agent import ReviewAgent
 
         agent = ReviewAgent()
+        # Clean up paper trades that violate current filter rules
+        cancelled = agent.cancel_invalid_paper_trades()
+        if cancelled:
+            logger.info(f"[Scheduler] Cleaned up {cancelled} invalid paper trades.")
         outcomes = agent.review_completed_markets()
         logger.info(f"[Scheduler] Review complete: {len(outcomes)} outcomes recorded.")
     except Exception as e:
