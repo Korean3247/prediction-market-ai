@@ -100,6 +100,88 @@ class PredictionAgent:
         """Async entry point."""
         return await self._predict_async(market, research_report)
 
+    async def quick_predict_async(self, market: Market) -> Optional[Prediction]:
+        """
+        Fast path prediction — skips LLM and ResearchAgent entirely.
+        Uses rule-based adjustment + XGBoost calibration only.
+
+        When to use:
+          - Markets resolving within 6 h (every second counts)
+          - As a fallback when LLM is unavailable
+
+        Trade-off: lower confidence score, but runs in milliseconds with zero API cost.
+        """
+        logger.info(
+            f"PredictionAgent (quick): predicting for '{market.title[:60]}'"
+        )
+
+        implied_prob = max(0.01, min(0.99, float(market.current_price or 0.5)))
+        rule_adjusted = _rule_based_adjustment(implied_prob, 0.0, 0.5)
+
+        calibrated_prob, confidence_boost = calibrator.predict(
+            market_price=implied_prob,
+            llm_prob=rule_adjusted,
+            sentiment=0.0,
+            credibility=0.5,
+            liquidity=float(market.liquidity or 0),
+            volume=float(market.volume_24h or 0),
+            spread=float(market.spread or 0.05),
+        )
+
+        predicted_prob = (
+            round(0.7 * calibrated_prob + 0.3 * rule_adjusted, 6)
+            if calibrator.is_trained
+            else rule_adjusted
+        )
+        predicted_prob = max(0.01, min(0.99, predicted_prob))
+
+        # Quick predictions carry lower confidence (no research, no LLM)
+        base_confidence = _calculate_confidence(
+            liquidity=float(market.liquidity or 0),
+            volume_24h=float(market.volume_24h or 0),
+            source_count=0,
+            credibility_score=0.5,
+            sentiment_confidence=0.0,
+        )
+        confidence = round(min(1.0, base_confidence * 0.80 + confidence_boost), 4)
+
+        edge = round(predicted_prob - implied_prob, 6)
+        reasoning = "Quick prediction: rule-based + XGBoost only (no LLM, no research)."
+
+        prediction = Prediction(
+            market_id=market.id,
+            predicted_probability=predicted_prob,
+            implied_probability=round(implied_prob, 6),
+            edge=edge,
+            confidence_score=confidence,
+            model_version=f"{MODEL_VERSION}-quick",
+            reasoning=reasoning,
+        )
+
+        def _save(db: Session) -> Prediction:
+            db.add(prediction)
+            db.flush()
+            db.refresh(prediction)
+            return prediction
+
+        try:
+            if self._db:
+                saved = _save(self._db)
+                self._db.commit()
+            else:
+                with get_db_context() as db:
+                    saved = _save(db)
+
+            logger.info(
+                f"PredictionAgent (quick): saved | "
+                f"predicted={saved.predicted_probability:.3f}, "
+                f"edge={saved.edge:.3f}, confidence={saved.confidence_score:.3f}"
+            )
+            return saved
+        except Exception as e:
+            logger.error(f"Quick prediction save failed for {market.market_id}: {e}")
+            return None
+
     async def _predict_async(
         self, market: Market, research_report: Optional[ResearchReport] = None
     ) -> Optional[Prediction]:

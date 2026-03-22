@@ -25,10 +25,52 @@ from typing import Dict, Optional
 from config import settings
 from database.session import get_db_context
 from database.models import Market
+from services.mispricing_scanner import check_mispricing, get_market_title, get_market_url
 
 logger = logging.getLogger(__name__)
 
 _WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+
+# Spread alert cooldown: {asset_id: last_alert_time}
+_spread_cooldown: Dict[str, datetime] = {}
+
+
+def _check_spread_alert(asset_id: str, bid: float, ask: float) -> None:
+    """
+    Fire a Telegram alert when the bid-ask spread is unusually wide.
+    Wide spread = market temporarily illiquid = potential mispricing opportunity.
+    Suppressed per-market for MISPRICING_ALERT_COOLDOWN_SECONDS to avoid spam.
+    """
+    spread = ask - bid
+    if spread < settings.SPREAD_ALERT_THRESHOLD:
+        return
+
+    now = datetime.utcnow()
+    last = _spread_cooldown.get(asset_id)
+    if last and (now - last).total_seconds() < settings.MISPRICING_ALERT_COOLDOWN_SECONDS:
+        return
+
+    _spread_cooldown[asset_id] = now
+
+    title = get_market_title(asset_id) or asset_id[:40]
+    url = get_market_url(asset_id)
+
+    logger.info(
+        f"[RealtimeMonitor] Wide spread on {asset_id[:16]}: "
+        f"bid={bid:.3f} ask={ask:.3f} spread={spread:.3f}"
+    )
+    try:
+        from services.alert_service import alert_service
+        alert_service.send_spread_alert(
+            market_title=title,
+            asset_id=asset_id,
+            bid=bid,
+            ask=ask,
+            spread=spread,
+            url=url,
+        )
+    except Exception as e:
+        logger.warning(f"[RealtimeMonitor] Spread alert failed: {e}")
 _BATCH_SIZE = 50          # subscribe up to 50 markets at a time
 _RECONNECT_DELAY = 10     # seconds between reconnect attempts
 _REFRESH_INTERVAL = 300   # re-fetch tracked condition IDs every 5 minutes
@@ -230,9 +272,15 @@ async def _run_monitor_loop() -> None:
 
                             if best_bid and best_ask:
                                 try:
-                                    price = (float(best_bid) + float(best_ask)) / 2.0
+                                    bid_f = float(best_bid)
+                                    ask_f = float(best_ask)
+                                    price = (bid_f + ask_f) / 2.0
                                 except (TypeError, ValueError):
                                     continue
+                                # Check for wide spread (illiquidity signal)
+                                await asyncio.get_event_loop().run_in_executor(
+                                    None, _check_spread_alert, asset_id, bid_f, ask_f
+                                )
                             elif last_price:
                                 try:
                                     price = float(last_price)
@@ -246,6 +294,10 @@ async def _run_monitor_loop() -> None:
                             # Run price update in thread pool to avoid blocking event loop
                             await asyncio.get_event_loop().run_in_executor(
                                 None, _update_market_price, db_id, price, None
+                            )
+                            # Immediately check for mispricing against stored prediction
+                            await asyncio.get_event_loop().run_in_executor(
+                                None, check_mispricing, asset_id, price
                             )
 
                     except json.JSONDecodeError:

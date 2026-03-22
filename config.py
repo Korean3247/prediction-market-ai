@@ -102,6 +102,28 @@ class Settings(BaseSettings):
         default=0.02, description="Max position as fraction of market liquidity (2%)"
     )
 
+    # Order book spread alert
+    SPREAD_ALERT_THRESHOLD: float = Field(
+        default=0.10,
+        description="Bid-ask spread width (10%) that triggers an illiquidity/mispricing alert",
+    )
+
+    # Real-time mispricing scanner
+    MISPRICING_MIN_EDGE: float = Field(
+        default=0.08,
+        description="Minimum edge (predicted - live price) to fire a mispricing alert (8%)",
+    )
+    MISPRICING_ALERT_COOLDOWN_SECONDS: int = Field(
+        default=300,
+        description="Minimum seconds between mispricing alerts for the same market",
+    )
+
+    # Intraday market classification
+    INTRADAY_HOURS: int = Field(
+        default=24,
+        description="Markets resolving within this many hours are treated as intraday",
+    )
+
     # Logging
     LOG_LEVEL: str = Field(default="INFO", description="Logging level")
 

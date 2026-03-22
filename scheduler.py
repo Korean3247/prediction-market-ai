@@ -171,8 +171,13 @@ def job_review_completed_markets() -> None:
 
 def ultra_fast_pipeline_job() -> None:
     """
-    Scheduled job: intraday pipeline for markets resolving within 24h.
-    Runs every 5 minutes to enable multiple trades per day.
+    Scheduled job: intraday pipeline for markets resolving within INTRADAY_HOURS.
+    Runs every 5 minutes.
+
+    Speed optimisation: if a prediction was made within the last 30 minutes,
+    skip ResearchAgent and go straight to PredictionAgent (rule-based + ML only)
+    then RiskAgent.  Research is the slowest step (news + Reddit + LLM); skipping
+    it lets intraday markets be re-evaluated in seconds instead of minutes.
     """
     logger.info("[Scheduler] Starting ultra-fast pipeline job (intraday markets).")
     try:
@@ -180,51 +185,101 @@ def ultra_fast_pipeline_job() -> None:
         from agents.research_agent import ResearchAgent
         from agents.risk_agent import RiskAgent
         from agents.scan_agent import ScanAgent
+        from database.models import (
+            Market as MarketModel,
+            Prediction as PredictionModel,
+            RiskDecision as RiskDecisionModel,
+        )
+        import asyncio as _asyncio
 
         scan_agent = ScanAgent()
         raw = scan_agent.scan_markets()
 
-        now = __import__('datetime').datetime.utcnow()
-        cutoff = now + __import__('datetime').timedelta(hours=settings.ULTRA_FAST_PIPELINE_HOURS)
+        now = datetime.utcnow()
+        cutoff = now + timedelta(hours=settings.INTRADAY_HOURS)
         intraday = [m for m in raw if m.resolve_time and m.resolve_time <= cutoff]
 
         if not intraday:
             logger.info("[Scheduler] No intraday markets to process.")
             return
 
-        logger.info(f"[Scheduler] Ultra-fast pipeline processing {len(intraday)} intraday markets.")
+        logger.info(
+            f"[Scheduler] Ultra-fast pipeline: {len(intraday)} intraday markets "
+            f"(resolving within {settings.INTRADAY_HOURS}h)."
+        )
 
         for market in intraday[:10]:
             try:
                 with get_db_context() as db:
-                    from database.models import Market as MarketModel, RiskDecision as RiskDecisionModel
-                    import asyncio as _asyncio
                     m = db.query(MarketModel).filter(MarketModel.id == market.id).first()
                     if not m:
                         continue
 
-                    existing = (
+                    existing_decision = (
                         db.query(RiskDecisionModel)
                         .filter(RiskDecisionModel.market_id == m.id)
                         .order_by(RiskDecisionModel.created_at.desc())
                         .first()
                     )
-                    if existing and not _should_reanalyze(m, existing):
+                    if existing_decision and not _should_reanalyze(m, existing_decision):
                         continue
 
-                    research_agent = ResearchAgent(db=db)
-                    report = _asyncio.run(research_agent.research_market_async(m))
+                    # Check for a recent prediction (< 30 min old)
+                    recent_cutoff = now - timedelta(minutes=30)
+                    recent_pred = (
+                        db.query(PredictionModel)
+                        .filter(PredictionModel.market_id == m.id)
+                        .filter(PredictionModel.created_at >= recent_cutoff)
+                        .order_by(PredictionModel.created_at.desc())
+                        .first()
+                    )
 
-                    prediction_agent = PredictionAgent(db=db)
-                    prediction = _asyncio.run(prediction_agent.predict_async(m, report))
-                    if not prediction:
-                        continue
+                    hours_left = (
+                        (m.resolve_time - now).total_seconds() / 3600
+                        if m.resolve_time else 999
+                    )
 
-                    risk_agent = RiskAgent(db=db)
-                    risk_agent.decide(m, prediction)
+                    if recent_pred:
+                        # Fast path A: re-use existing prediction for risk decision
+                        logger.info(
+                            f"[Scheduler] Ultra-fast (reuse pred): {m.market_id} "
+                            f"— prediction from {recent_pred.created_at.strftime('%H:%M:%S')}"
+                        )
+                        risk_agent = RiskAgent(db=db)
+                        risk_agent.decide(m, recent_pred)
+                    elif hours_left <= 6:
+                        # Fast path B: < 6h to resolve — skip LLM, use quick predict
+                        logger.info(
+                            f"[Scheduler] Ultra-fast (quick predict, {hours_left:.1f}h left): "
+                            f"{m.market_id}"
+                        )
+                        prediction_agent = PredictionAgent(db=db)
+                        prediction = _asyncio.run(
+                            prediction_agent.quick_predict_async(m)
+                        )
+                        if not prediction:
+                            continue
+                        risk_agent = RiskAgent(db=db)
+                        risk_agent.decide(m, prediction)
+                    else:
+                        # Full path: Research → Predict (LLM) → Risk
+                        research_agent = ResearchAgent(db=db)
+                        report = _asyncio.run(research_agent.research_market_async(m))
+
+                        prediction_agent = PredictionAgent(db=db)
+                        prediction = _asyncio.run(prediction_agent.predict_async(m, report))
+                        if not prediction:
+                            continue
+
+                        risk_agent = RiskAgent(db=db)
+                        risk_agent.decide(m, prediction)
+
                     logger.info(f"[Scheduler] Ultra-fast pipeline complete for {m.market_id}")
             except Exception as e:
-                logger.error(f"[Scheduler] Ultra-fast pipeline failed for {market.market_id}: {e}", exc_info=True)
+                logger.error(
+                    f"[Scheduler] Ultra-fast pipeline failed for {market.market_id}: {e}",
+                    exc_info=True,
+                )
                 continue
     except Exception as e:
         logger.error(f"[Scheduler] Ultra-fast pipeline top-level error: {e}", exc_info=True)

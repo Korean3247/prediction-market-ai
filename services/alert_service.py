@@ -123,6 +123,51 @@ class AlertService:
         )
         return self.send(message)
 
+    def send_spread_alert(
+        self,
+        market_title: str,
+        asset_id: str,
+        bid: float,
+        ask: float,
+        spread: float,
+        url: str = "",
+    ) -> bool:
+        """Wide bid-ask spread = temporarily illiquid market = potential mispricing."""
+        message = (
+            f"📉 <b>WIDE SPREAD DETECTED</b>\n\n"
+            f"📊 <b>{market_title[:80]}</b>\n\n"
+            f"• Bid: {bid:.1%}  Ask: {ask:.1%}\n"
+            f"• Spread: <b>{spread:.1%}</b>\n"
+            f"• Fair value: ~{(bid + ask) / 2:.1%}\n\n"
+            f"<i>Market temporarily illiquid — watch for reversion</i>"
+        )
+        if url:
+            message += f"\n🔗 {url}"
+        return self.send(message)
+
+    def send_mispricing_alert(
+        self,
+        market_title: str,
+        asset_id: str,
+        predicted_prob: float,
+        live_price: float,
+        edge: float,
+        direction: str,
+        url: str = "",
+    ) -> bool:
+        action = "🟢 BUY YES" if edge > 0 else "🔴 BUY NO"
+        message = (
+            f"⚡ <b>MISPRICING DETECTED</b>\n\n"
+            f"📊 <b>{market_title[:80]}</b>\n\n"
+            f"• Predicted: {predicted_prob:.1%}\n"
+            f"• Live price: {live_price:.1%}\n"
+            f"• Edge: <b>{edge:+.1%}</b>\n"
+            f"• Signal: {action} ({direction})\n"
+        )
+        if url:
+            message += f"\n🔗 {url}"
+        return self.send(message)
+
     def send_pipeline_summary(self, markets_processed: int, buy_count: int,
                                observe_count: int, skip_count: int) -> bool:
         message = (
