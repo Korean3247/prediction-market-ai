@@ -36,12 +36,20 @@ class Settings(BaseSettings):
 
     # Decision Thresholds
     MIN_CONFIDENCE_SCORE: float = Field(
-        default=0.6, description="Minimum confidence score to act"
+        default=0.55, description="Minimum confidence score to act"
     )
     MIN_EDGE: float = Field(
-        default=0.005, description="Minimum edge (predicted - implied probability)"
+        default=0.003, description="Minimum edge (predicted - implied probability)"
     )
-    MIN_EV: float = Field(default=0.01, description="Minimum expected value to bet")
+    MIN_EV: float = Field(default=0.005, description="Minimum expected value to bet")
+
+    # Market price range for analysis priority (avoid extreme longshots / near-certainties)
+    PREFERRED_PRICE_MIN: float = Field(
+        default=0.15, description="Minimum market price for priority analysis (15%)"
+    )
+    PREFERRED_PRICE_MAX: float = Field(
+        default=0.85, description="Maximum market price for priority analysis (85%)"
+    )
 
     # Position Sizing
     MAX_POSITION_SIZE: float = Field(
@@ -60,8 +68,8 @@ class Settings(BaseSettings):
     MAX_MARKETS_TO_SCAN: int = Field(default=500, description="Maximum number of markets to fetch per scan")
 
     # Paper Trading
-    PAPER_MIN_EDGE: float = Field(default=0.005, description="Minimum edge for paper trade signal")
-    PAPER_MIN_CONFIDENCE: float = Field(default=0.5, description="Minimum confidence for paper trade signal")
+    PAPER_MIN_EDGE: float = Field(default=0.003, description="Minimum edge for paper trade signal")
+    PAPER_MIN_CONFIDENCE: float = Field(default=0.45, description="Minimum confidence for paper trade signal")
     PAPER_MIN_PRICE: float = Field(default=0.02, description="Minimum market price (2%) — skip YES bets on near-zero probability markets")
     PAPER_MAX_HORIZON_DAYS: int = Field(default=180, description="Maximum days to resolution — skip paper trades on markets resolving > 180 days out")
 

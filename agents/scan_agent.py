@@ -23,18 +23,20 @@ def _calculate_priority_score(market: Dict[str, Any]) -> float:
     Compute a composite priority score for a market.
 
     Weights:
-        - time_factor:   0.45  (short-term markets prioritized for faster data)
-        - liquidity:     0.25
-        - volume_24h:    0.20
+        - time_factor:   0.35  (short-term markets prioritized for faster data)
+        - price_range:   0.20  (markets in 15-85% range have more edge potential)
+        - liquidity:     0.20
+        - volume_24h:    0.15
         - 1/spread:      0.10
 
-    Time scoring: peak at 3-14 days, usable up to 90 days, decay beyond that.
-    Markets resolving in 24h-14d score highest for rapid feedback cycles.
+    Markets in the 15-85% price range are strongly preferred — extreme prices
+    (< 15% or > 85%) leave almost no room for the AI to find edge.
     """
     liquidity = market.get("liquidity", 0.0)
     volume = market.get("volume_24h", 0.0)
     spread = max(market.get("spread", 0.05), 0.001)
     resolve_time = market.get("resolve_time")
+    current_price = market.get("current_price", 0.5)
 
     # Normalize liquidity (log scale, capped at 1M)
     liq_score = min(1.0, (liquidity / 1_000_000) ** 0.5) if liquidity > 0 else 0.0
@@ -44,6 +46,23 @@ def _calculate_priority_score(market: Dict[str, Any]) -> float:
 
     # Tighter spread → higher score
     spread_score = min(1.0, 0.05 / spread)
+
+    # Price range score: peak at 30-70%, good at 15-85%, poor outside
+    # This ensures the system focuses on markets where AI can find meaningful edge
+    pmin = settings.PREFERRED_PRICE_MIN
+    pmax = settings.PREFERRED_PRICE_MAX
+    mid = (pmin + pmax) / 2.0
+    half_range = (pmax - pmin) / 2.0
+    if pmin <= current_price <= pmax:
+        # Peak score (1.0) at the center, 0.7 at boundaries
+        dist_from_center = abs(current_price - mid) / half_range
+        price_score = 1.0 - 0.3 * dist_from_center
+    elif current_price < pmin:
+        # Rapid decay below PREFERRED_PRICE_MIN
+        price_score = max(0.0, 0.7 * (current_price / pmin))
+    else:
+        # Rapid decay above PREFERRED_PRICE_MAX
+        price_score = max(0.0, 0.7 * ((1.0 - current_price) / (1.0 - pmax)))
 
     # Time factor (tiered):
     #   < 6h   → 1.0  (intraday — highest priority for rapid feedback)
@@ -64,9 +83,10 @@ def _calculate_priority_score(market: Dict[str, Any]) -> float:
             time_score = max(0.0, 0.40 * (1.0 - (hours_left - 336) / (2160 - 336)))
 
     score = (
-        0.45 * time_score
-        + 0.25 * liq_score
-        + 0.20 * vol_score
+        0.35 * time_score
+        + 0.20 * price_score
+        + 0.20 * liq_score
+        + 0.15 * vol_score
         + 0.10 * spread_score
     )
     return round(score, 6)
@@ -112,10 +132,14 @@ class ScanAgent:
         """
         Apply configured quality filters to raw market dicts.
         Returns only markets that pass all criteria.
+
+        Markets with extreme prices (< 5% or > 95%) are excluded entirely —
+        there is virtually no edge to find in near-certain outcomes.
         """
         passed = []
         now = datetime.utcnow()
         min_resolve = now + timedelta(hours=settings.MIN_HOURS_TO_RESOLVE)
+        filtered_price = 0
 
         for m in markets:
             platform = m.get("platform", "")
@@ -126,6 +150,12 @@ class ScanAgent:
             else:
                 min_liq = settings.MIN_LIQUIDITY
                 min_vol = settings.MIN_VOLUME_24H
+
+            # Price range hard filter — skip extreme longshots and near-certainties
+            price = m.get("current_price", 0.5)
+            if price < 0.05 or price > 0.95:
+                filtered_price += 1
+                continue
 
             # Liquidity filter
             if m.get("liquidity", 0) < min_liq:
@@ -162,7 +192,10 @@ class ScanAgent:
 
             passed.append(m)
 
-        logger.info(f"Filters: {len(markets)} raw → {len(passed)} passed.")
+        logger.info(
+            f"Filters: {len(markets)} raw → {len(passed)} passed "
+            f"({filtered_price} excluded by price range)."
+        )
         return passed
 
     def _upsert_market(
